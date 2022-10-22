@@ -1,0 +1,903 @@
+---
+title: "Gun_Stocks_Vs_Mass_Shootings"
+author: "Team 89"
+date: '2022-06-18'
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(TTR)
+library(quantmod)
+
+library(ggplot2); library(readr); library(dplyr); library(tidyverse);
+library(gridExtra);library(ggExtra); library(knitr);
+library(caret); library(gridExtra); library(lubridate); library(stringr);
+library(PerformanceAnalytics); library(xts); library(tidyquant); library(tidyverse); library(data.table); library(chron)
+
+```
+
+## Mass shootings data  
+
+- Select "location", "date", "fatalities", "injured", and "total_victims"    
+- Move those dates that fall on holidays and weekend to the next working (trading) day  
+- Create variable "year" based on "date" variable  
+- Create "state" variable based on "location" variable  
+- Convert to integer those variables that are characters  
+- Select "location", "sate", "year", "fatalities", "injured", and "total_victims"  
+- Updated data of Uvalde, Texas and July 4, 2022 Highland Park, Illinois mass shootings    
+
+```{r}
+us_mass <- read.csv("US_Mass_Shootings_May_24_2022.csv")
+
+#Select those variables that are needed for our analysis
+us_mass02 <- us_mass %>% select(location, date, fatalities, injured, total_victims)
+str(us_mass02)
+# change date format to standardize dates
+us_mass02 <- us_mass02 %>% mutate(date = mdy(date)) %>%
+                #Shooting was/is in a holiday date is move to next date
+                mutate(date = ifelse(is.holiday(date), date+1,date)) %>%
+                # Moving any dates to the following Monday
+                mutate(weekday=wday(date)) %>%
+                mutate(date1 = ifelse(weekday==1,(date+1), ifelse(weekday==7, (date+2), (date)))) %>%
+                mutate(date = ifelse(is.holiday(date), date+1,date)) %>%
+                mutate(date = as.Date(date1)) %>%
+                mutate(year = year(date)) %>%
+               
+                mutate(state = ifelse(location=="Washington, D.C.", "Washington, D.C.",str_extract(location,
+                                                "[\\s]*[A-Z][a-z]+[\\s]*[[A-Z][a-z]+]*$"))) %>%
+                mutate(fatalities = as.integer(fatalities)) %>%
+                mutate(injured = as.integer(injured)) %>%
+                mutate(total_victims = as.integer(total_victims)) %>%
+                select(location, state, date, year, fatalities, injured, total_victims)
+
+## Update Uvalde, Texas data
+us_mass02$fatalities[us_mass02$location=="Uvalde, Texas"] <- as.integer(22)
+us_mass02$injured[us_mass02$location=="Uvalde, Texas"] <- as.integer(17)
+us_mass02$total_victims[us_mass02$location=="Uvalde, Texas"] <- as.integer(39)
+
+## Add Highland Park, Illinois mass shooting  
+us_mass02 <- us_mass02 %>% add_row(location = "Highland Park, Illinois", state = "Illinois", date = mdy(07042022), year= as.integer(2022), fatalities = as.integer(8), injured=as.integer(29), total_victims=as.integer(37), .before=1)
+
+
+
+
+summary(us_mass02)
+
+```
+
+## Group mass shooting data by year and state  
+
+Group mass shooting data by state and year  
+
+```{r}
+usmass_yearly <- us_mass02 %>% group_by(year) %>%
+        summarise( fatalities=sum(fatalities, na.rm = TRUE), injured=sum(injured, na.rm = TRUE), total_victims=sum(total_victims, na.rm = TRUE)) 
+
+shootings_yrl <- us_mass02 %>% count(year)
+colnames(shootings_yrl) <- c("year", "mass_shootings")
+usmass_yearly <- merge(usmass_yearly, shootings_yrl, by="year")
+usmass_yearly$intensity <- usmass_yearly$total_victims/usmass_yearly$mass_shootings
+tail(usmass_yearly)
+
+
+usmass_state <- us_mass02 %>% group_by(state) %>%
+        summarise( fatalities=sum(fatalities, na.rm = TRUE), injured=sum(injured, na.rm = TRUE), total_victims=sum(total_victims, na.rm = TRUE))
+
+shootings_state <- us_mass02 %>% count(state)
+colnames(shootings_state) <- c("state", "mass_shootings")
+usmass_state <- merge(usmass_state, shootings_state, by="state")
+usmass_state <- usmass_state %>% arrange(desc(mass_shootings))
+head(usmass_state)
+
+```
+
+
+### Exploratory plotting
+
+#### US Mass Shooting total victims per State  
+
+Plot of total fatalities grouped by state  
+
+```{r}
+subset_usmass_state1 <- usmass_state %>% arrange(desc(total_victims)) %>% slice(1:12)
+temp_masssate <- subset_usmass_state1[,c("state", "injured", "fatalities")] %>% reshape2::melt()
+
+
+usshoot_state_plot <- ggplot(data = temp_masssate, aes(y=reorder(state, (value)), x=value, fill=variable))
+usshoot_state_plot <- usshoot_state_plot + geom_col(position="stack", stat="identity")
+usshoot_state_plot <- usshoot_state_plot + scale_x_continuous(breaks = seq(0, 700, by = 100))
+usshoot_state_plot <- usshoot_state_plot + labs(title="US Mass Shooting Total Victims per State",
+                                                subtitle = "Kaggle US Mass Shootings",
+                                                caption = "Team 89")
+usshoot_state_plot <- usshoot_state_plot + ylab("State") + xlab("Total Victims")
+usshoot_state_plot <- usshoot_state_plot + theme(plot.title = element_text(size = 15))
+usshoot_state_plot <- usshoot_state_plot + theme(axis.title = element_text(size = 15)) 
+usshoot_state_plot <- usshoot_state_plot + theme(axis.text = element_text(size = 15))
+usshoot_state_plot <- usshoot_state_plot + theme(legend.title = element_blank())
+usshoot_state_plot <- usshoot_state_plot + theme(legend.position = "right")
+
+
+
+
+usshoot_state_plot
+ggsave("89plot01.png")
+
+```
+
+
+
+#### US Mass Shooting total shootings per State  
+
+Plot of number of mass shootings grouped by state  
+
+```{r}
+#temp_masssate <- usmass_state[,c("state", "injured", "fatalities")] %>% reshape2::melt()
+
+subset_usmass_state2 <- usmass_state %>% arrange(desc(mass_shootings)) %>% slice(1:12)
+        
+usshoot_state_plot1 <- ggplot(data = subset_usmass_state2, aes(y=reorder(state, mass_shootings), x=mass_shootings))
+usshoot_state_plot1 <- usshoot_state_plot1 + geom_col(position="stack", stat="identity", fill="red")
+usshoot_state_plot1 <- usshoot_state_plot1 + scale_x_continuous(breaks = seq(0, 30, by = 5))
+usshoot_state_plot1 <- usshoot_state_plot1 + labs(title="US Total of Mass Shootings per State",
+                                                subtitle = "Kaggle US Mass Shootings",
+                                                caption = "Team 89")
+usshoot_state_plot1 <- usshoot_state_plot1 + ylab("State") + xlab("Total Mass Shootings")
+usshoot_state_plot1 <- usshoot_state_plot1 + theme(plot.title = element_text(size = 15))
+usshoot_state_plot1 <- usshoot_state_plot1 + theme(axis.title = element_text(size = 15)) 
+usshoot_state_plot1 <- usshoot_state_plot1 + theme(axis.text = element_text(size = 15))
+usshoot_state_plot1 <- usshoot_state_plot1 + theme(legend.title = element_blank())
+usshoot_state_plot1 <- usshoot_state_plot1 + theme(legend.position = "right")
+
+usshoot_state_plot1
+ggsave("89plot02.png")
+```
+
+
+#### Annual Mass Shootings  
+
+Plot of number of mass shooting per year  
+
+```{r}
+usshoot_plot1 <- ggplot()+ geom_point(data = usmass_yearly, aes(x=year, y=mass_shootings), color="red")
+usshoot_plot1 <- usshoot_plot1 + geom_smooth(data = usmass_yearly, aes(x=year, y=mass_shootings), method="lm")
+usshoot_plot1 <- usshoot_plot1 + labs(title = "Annual Mass Shootings", 
+                                      subtitle = "Kaggle US Mass Shootings", 
+                                      caption = "Team 89")
+
+usshoot_plot1
+ggsave("89plot03.png")
+```
+#### Annual Fatalities  
+
+Plot of annual fatalities due to mass shootings  
+
+```{r}
+usshoot_plot1 <- ggplot()+ geom_point(data = usmass_yearly, aes(x=year, y=fatalities), color="red")
+usshoot_plot1 <- usshoot_plot1 + geom_smooth(data = usmass_yearly, aes(x=year, y=fatalities), method="lm")
+usshoot_plot1 <- usshoot_plot1 + labs(title = "Annual Mass Shooting Fatalities", 
+                                      subtitle = "Kaggle US Mass Shootings", 
+                                      caption = "Team 89")
+
+usshoot_plot1
+ggsave("89plot04.png")
+```
+
+#### Annual Fatality Intesity   
+
+Number of victims per shooting on function of year  
+
+```{r}
+usshoot_plot1 <- ggplot()+ geom_point(data = usmass_yearly, aes(x=year, y=intensity), color="red")
+usshoot_plot1 <- usshoot_plot1 + geom_smooth(data = usmass_yearly, aes(x=year, y=intensity), method="lm")
+usshoot_plot1 <- usshoot_plot1 + labs(title = "Number of Victims per mass shooting", 
+                                      subtitle = "Kaggle US Mass Shootings", 
+                                      caption = "Team 89")
+usshoot_plot1 <- usshoot_plot1 + ylab("Victims per mass shooting")
+usshoot_plot1
+ggsave("89plot05.png")
+```
+
+#### Obtain historical stock price of US gun manufactures.  
+
+Obtain stock history for the companies that are been evaluated using **tq_get** function  
+
+
+```{r}
+
+date_str <- "2009-10-01"
+#stocks <- c("swbi")
+stocks <- c("rgr", "swbi")
+#stocks <- c("rgr", "swbi", "oln", "npk", "bgfv", "axon" )
+
+gun_co_stocks <- stocks %>% tq_get(get="stock.prices", from=date_str, to=Sys.Date())
+head(gun_co_stocks)
+
+
+
+```
+
+#### Plotting adjusted stock price using ggplot2  
+
+The historical stock price for analyzed public companies, since October 2009  
+
+```{r}
+gun_stocks_plot <- ggplot(data = gun_co_stocks, aes(x=date, y=adjusted, group=symbol))
+gun_stocks_plot <- gun_stocks_plot + geom_line(aes(color=symbol))
+gun_stocks_plot <- gun_stocks_plot + theme(legend.position = "bottom") 
+gun_stocks_plot <- gun_stocks_plot + labs(title = "Adjusted Stock Price US Gun Manufactures", 
+                                          subtitle = "Source: Yahoo Finance", 
+                                          caption = "team 89")
+gun_stocks_plot <- gun_stocks_plot + ylab("Adjusted Stock Price")
+gun_stocks_plot <- gun_stocks_plot + scale_x_date(date_breaks = "2 years", date_labels = "%Y")
+
+gun_stocks_plot
+ggsave("89plot06B.png")
+```
+
+
+#### Filter mass shootings that happened after 2010-01-01, then Obtain mass shooting date vector  
+
+Generate a vector with dates of mass shootings so we can use it in the following exploratory plots  
+
+```{r}
+us_mass03 <- us_mass02 %>% filter(date>="2010-01-01" & total_victims>=7)
+us_mass_dates <- us_mass03[,3]
+
+```
+
+#### Plotting adjusted stock price and mass shooting dates using ggplot2  
+
+Generate plots including adjusted stock price and dates of mass shootings (vertical dash lines)  
+
+```{r}
+gun_stocks_plot <- ggplot(data = gun_co_stocks, aes(x=date, y=adjusted, group=symbol))
+gun_stocks_plot <- gun_stocks_plot + geom_line(aes(color=symbol), size=0.75)
+gun_stocks_plot <- gun_stocks_plot + theme(legend.position = "bottom") 
+gun_stocks_plot <- gun_stocks_plot + theme(legend.position = "bottom", legend.key.width=unit(0.1,"npc"))
+
+## Vertical lines to show mass shootings
+gun_stocks_plot <- gun_stocks_plot + geom_vline(data=us_mass03, aes(xintercept=date), linetype=3)
+
+gun_stocks_plot <- gun_stocks_plot + labs(title = "Adjusted Stock Price US Gun Manufactures", 
+                                          subtitle = "Mass Shootings with seven or more total victims", 
+                                          caption = "Source: Yahoo finance and Kaggle's Mass Shooting in United States (2018-2022)")
+gun_stocks_plot <- gun_stocks_plot + ylab("Adjusted Stock Price")
+gun_stocks_plot <- gun_stocks_plot + scale_x_date(date_breaks = "2 years", date_labels = "%Y")
+
+gun_stocks_plot
+ggsave("89plot07B.png")
+```
+
+#### Get stock returns  
+
+Obtain the returns for each of companies using **tq_transmute** function from **tidyquant** package  
+
+```{r}
+gun_co_returns <- gun_co_stocks %>% group_by(symbol) %>% tq_transmute(select = adjusted, 
+                                                                      mutate_fun = periodReturn, 
+                                                                      period="daily", 
+                                                                      col_rename = "Ra")
+
+head(gun_co_returns)
+
+```
+
+#### Plot of gun company returns
+
+Generate a plot showing return of each of the companies and dates of mass shootings (vertical dash lines)  
+```{r}
+gun_returns_plot <- ggplot(data = gun_co_returns, aes(x=date, y=Ra, group=symbol))
+gun_returns_plot <- gun_returns_plot + geom_line(aes(color=symbol))
+gun_returns_plot <- gun_returns_plot + theme(legend.position = "bottom") 
+gun_returns_plot <- gun_returns_plot + theme(legend.position = "bottom", legend.key.width=unit(0.1,"npc"))
+
+## Vertical lines to show mass shootings
+gun_returns_plot <- gun_returns_plot + geom_vline(data=us_mass03, aes(xintercept=date), linetype=3)
+
+gun_returns_plot <- gun_returns_plot + labs(title = "Returns of US Gun Manufactures", 
+                                            subtitle = "Mass Shootings with seven or more total victims", 
+                                            caption = "Source: Yahoo finance and Kaggle's Mass Shooting in United States (2018-2022)")
+
+gun_returns_plot <- gun_returns_plot + ylab("Ra") + ylim(-0.2, 0.2)
+gun_returns_plot <- gun_returns_plot + scale_x_date(date_breaks = "2 years", date_labels = "%Y")
+
+gun_returns_plot
+
+
+ggsave("89plot08B.png")
+
+```
+
+#### Obtain market value (capitalization) for each company and create market value weighted index weight  
+
+*rvest* <https://cran.r-project.org/web/packages/rvest/rvest.pdf> package is used to harvest (scrap) summary page of each company in Yahoo Finance.  Once the market values are obtain a weights are determine to set up portafolio  
+
+
+```{r}
+library(rvest)
+
+
+# Define stock name
+#stocks <- c("rgr", "swbi")
+#stocks <- c("rgr", "swbi", "oln", "npk", "bgfv", "axon" )
+
+Mkt_Caps <- c()
+for(s in stocks){
+        # Extract and transform data
+        temp_Co_Metrics <- paste0("https://finance.yahoo.com/quote/", s) %>% 
+                           read_html() %>%  html_table() %>% map_df(bind_cols) %>% 
+                           t() %>% as_tibble()
+
+        temp_Mkt_Cap <- temp_Co_Metrics[2,9]
+        temp_Cap_Unit <- str_extract(temp_Mkt_Cap, "[A-Z]")
+        temp_Cap_Amount <- as.numeric(str_extract(temp_Mkt_Cap, "\\d*\\.\\d*"))
+        temp_Cap_Value <- case_when(temp_Cap_Unit== "T" ~ temp_Cap_Amount*1000*1000,
+                                    temp_Cap_Unit== "B" ~ temp_Cap_Amount*1000,
+                                    temp_Cap_Unit=="M" ~ temp_Cap_Amount*1,
+                                    is.na(temp_Cap_Unit) ~ temp_Cap_Amount/(1000*1000))
+        Mkt_Caps <- append(Mkt_Caps, temp_Cap_Value)
+        }
+
+
+gun_wts <- Mkt_Caps/sum(Mkt_Caps)
+#gun_wts <- c(1/6, 1/6, 1/6, 1/6, 1/6, 1/6)
+
+co_summary <- data.frame(stocks, Mkt_Caps, gun_wts)
+co_summary              
+```
+
+#### Create a portfolio of gun manufactures  
+
+A data set for the portafolio was created as follows:  
+  
+- Portfolio return, Ra, was calculated using weights determined previously and using **tq_portfolio** function  
+- Simple moving average using **tq_mutate** function and mutate_fun "SMA"  
+- Return drawdown using **Drawdowns** function.  Then for each observation a new variables were created for the future drawdown at different days after using **lead** function  
+- Portfolio rolling average using **frollmean**  
+- Portfolio return after 2, 3, 5, 10, 15, and 20 days.  Momentum is defined as $Ra_t-Ra_0$ using **lead** function  
+- Dataset was filter for dates after January 1, 2022  
+
+
+```{r}
+
+
+gun_co_portfolio_returns <- gun_co_returns %>% 
+                                tq_portfolio(assets_col = symbol, 
+                                             returns_col = Ra, 
+                                             weights = gun_wts, 
+                                             col_rename = "Ra")
+
+gun_co_portfolio_returns <- gun_co_portfolio_returns %>% tq_mutate(select = Ra, mutate_fun = SMA, n=2) %>%
+                                                        rename(SMA.2day = SMA) %>%
+                                                        tq_mutate(select = Ra, mutate_fun = SMA, n=15) %>%
+                                                        rename(SMA.15day = SMA)
+                                                        
+
+
+gun_co_portfolio_returns <- gun_co_portfolio_returns %>% mutate(gunDD = Drawdowns(Ra)) %>%
+                                                        mutate(gunDD=as.numeric(gunDD)) %>%
+                                                        mutate(gunDD_2day=lead(gunDD,2)) %>%
+                                                        mutate(gunDD_3day=lead(gunDD,3)) %>%
+                                                        mutate(gunDD_5day=lead(gunDD,5)) %>%
+                                                        mutate(gunDD_10day=lead(gunDD,10)) %>%
+                                                        mutate(gunDD_15day=lead(gunDD,15)) %>%
+                                                        mutate(gunDD_20day=lead(gunDD,20))
+                                                                
+        
+gun_co_portfolio_returns <- gun_co_portfolio_returns %>% mutate(Ra_2day=frollmean(Ra,2)) %>%
+                                                        mutate(Ra_3day=frollmean(Ra,3)) %>% 
+                                                        mutate(Ra_5day=frollmean(Ra,5)) %>%
+                                                        mutate(Ra_10day=frollmean(Ra,10))
+
+
+gun_co_portfolio_returns <- gun_co_portfolio_returns %>% mutate(Mom_2day=lead(Ra,2) - Ra) %>%
+                                                        mutate(Mom_3day=lead(Ra,3) - Ra) %>%
+                                                        mutate(Mom_5day=lead(Ra,5) - Ra) %>%
+                                                        mutate(Mom_10day=lead(Ra,10) - Ra) %>%
+                                                        mutate(Mom_15day=lead(Ra,15) - Ra) %>%
+                                                        mutate(Mom_20day=lead(Ra,20) - Ra)
+
+gun_co_portfolio_returns <- gun_co_portfolio_returns %>% filter(date>="2010-01-01")
+
+head(gun_co_portfolio_returns,20)
+```
+
+#### Gun Portfolio statistics  
+
+Gun portfolio statistics using **table.Stats** from **PerformaceAnalytics** package <https://www.rdocumentation.org/packages/PerformanceAnalytics/versions/2.0.4/topics/table.Stats>  
+
+```{r}
+gun_portfolio_stats <- table.Stats(gun_co_portfolio_returns$Ra)
+gun_portfolio_stats
+
+```
+
+
+#### Plot of gun portfolio returns  
+
+Plot showing portfolio returns and the dates of mass shootings (vertical dash lines) on function of time  
+
+```{r}
+gun_portfolio_returns_plot <- ggplot(data = gun_co_portfolio_returns, aes(x=date, y=Ra))
+gun_portfolio_returns_plot <- gun_portfolio_returns_plot + geom_line(aes(color="red"), size=1)
+gun_portfolio_returns_plot <- gun_portfolio_returns_plot + theme(legend.position = "none")
+
+## Vertical lines to show mass shootings
+gun_portfolio_returns_plot <- gun_portfolio_returns_plot + geom_vline(data=us_mass03, aes(xintercept=date), linetype=3)
+
+gun_portfolio_returns_plot <- gun_portfolio_returns_plot + labs(title = "Returns of US Gun Manufacture Portfolio", 
+                                                                subtitle = "Mass Shootings with seven or more total victims", 
+                                                                caption = "Source: Yahoo finance and Kaggle's Mass Shooting in United States (2018-2022)")
+gun_portfolio_returns_plot <- gun_portfolio_returns_plot + ylab("Ra") + ylim(-0.2, 0.2)
+gun_portfolio_returns_plot <- gun_portfolio_returns_plot + scale_x_date(date_breaks = "2 years", date_labels = "%Y")
+gun_portfolio_returns_plot <- gun_portfolio_returns_plot + geom_hline(yintercept = 0, color="black")
+
+gun_portfolio_returns_plot
+
+ggsave("89plot09B.png")
+```
+
+#### Bar plot of portfolio returns  
+
+Bar plot showing the daily return of gun industry portfolio  
+
+```{r}
+gun_portfolio_returns_bars <- ggplot(data = gun_co_portfolio_returns, aes(x=date, y=Ra))
+gun_portfolio_returns_bars <- gun_portfolio_returns_bars + geom_bar(stat = "identity", fill=palette_light()[[1]])
+gun_portfolio_returns_bars <- gun_portfolio_returns_bars + geom_smooth(method = "lm")
+gun_portfolio_returns_bars <- gun_portfolio_returns_bars + theme(legend.position = "none")
+
+## Vertical lines to show mass shootings
+gun_portfolio_returns_bars <- gun_portfolio_returns_bars + geom_vline(data=us_mass03, aes(xintercept=date), linetype=3)
+
+gun_portfolio_returns_bars <- gun_portfolio_returns_bars + labs(title = "Returns of US Gun Manufacture Portfolio", 
+                                                                subtitle = "Mass Shootings with seven or more total victims", 
+                                                                caption = "Source: Yahoo finance and Kaggle's Mass Shooting in United States (2018-2022)")
+gun_portfolio_returns_bars <- gun_portfolio_returns_bars + ylab("Ra") + ylim(-0.05,0.05)
+gun_portfolio_returns_bars <- gun_portfolio_returns_bars + scale_x_date(date_breaks = "2 years", date_labels = "%Y")
+gun_portfolio_returns_bars <- gun_portfolio_returns_bars + geom_hline(yintercept = 0, color="black")
+gun_portfolio_returns_bars
+
+ggsave("89plot10B.png")
+```
+
+#### plot of portfolio drawdowns  
+
+Plot showing portfolio drawdowns and mass shootings (vertical das lines) on function of time  
+
+```{r}
+gun_portfolio_DD_plot <- ggplot(data = gun_co_portfolio_returns, aes(x=date, y=gunDD))
+gun_portfolio_DD_plot <- gun_portfolio_DD_plot + geom_line(aes(color="red"), size=1)
+gun_portfolio_DD_plot <- gun_portfolio_DD_plot + theme(legend.position = "none")
+
+## Vertical lines to show mass shootings
+gun_portfolio_DD_plot <- gun_portfolio_DD_plot + geom_vline(data=us_mass03, aes(xintercept=date), linetype=3)
+
+gun_portfolio_DD_plot <- gun_portfolio_DD_plot + labs(title = "DrawDowns of US Gun Manufacture Portfolio", 
+                                                                subtitle = "Mass Shootings with seven or more total victims", 
+                                                                caption = "Source: Yahoo finance and Kaggle's Mass Shooting in United States (2018-2022)")
+gun_portfolio_DD_plot <- gun_portfolio_DD_plot + ylab("Draw Downs") + ylim(-0.5, 0)
+gun_portfolio_DD_plot <- gun_portfolio_DD_plot + scale_x_date(date_breaks = "2 years", date_labels = "%Y")
+
+gun_portfolio_DD_plot
+
+ggsave("89plot11B.png")
+```
+
+#### Portfolio return moving averages  
+
+Plot showing 5 day moving average and mass shooting events on function of time  
+
+
+```{r}
+gun_portfolio_RaAvg <- ggplot(data = gun_co_portfolio_returns, aes(x=date, y=Ra_5day))
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + geom_line(aes(color="red"), size=1)
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + theme(legend.position = "none")
+
+## Vertical lines to show mass shootings
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + geom_vline(data=us_mass03, aes(xintercept=date), linetype=3)
+
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + labs(title = "5 day moving average of US Gun Manufacture Portfolio", 
+                                                                subtitle = "Mass Shootings with seven or more total victims", 
+                                                                caption = "Source: Yahoo finance and Kaggle's Mass Shooting in United States (2018-2022)")
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + ylab("Draw Downs")
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + scale_x_date(date_breaks = "2 years", date_labels = "%Y")
+
+gun_portfolio_RaAvg
+
+
+ggsave("89plot12B.png")
+```
+
+#### Portfolio return momentum  
+
+Plot showing 10 day portfolio momentun and mass shootign events on function of time  
+
+```{r}
+gun_portfolio_RaAvg <- ggplot(data = gun_co_portfolio_returns, aes(x=date, y=Mom_10day))
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + geom_line(aes(color="red"), size=1)
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + theme(legend.position = "none")
+
+## Vertical lines to show mass shootings
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + geom_vline(data=us_mass03, aes(xintercept=date), linetype=3)
+
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + labs(title = "10 day return momentum of US Gun Manufacture Portfolio", 
+                                                                subtitle = "Mass Shootings with seven or more total victims", 
+                                                                caption = "Source: Yahoo finance and Kaggle's Mass Shooting in United States (2018-2022)")
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + ylab("Draw Downs")
+gun_portfolio_RaAvg <- gun_portfolio_RaAvg + scale_x_date(date_breaks = "2 years", date_labels = "%Y")
+
+gun_portfolio_RaAvg
+
+
+ggsave("89plot13B.png")
+```
+
+#### Portfolio's Cumulative return  
+
+Cumulative return using **tq_portfolio** function  
+
+```{r}
+
+gun_co_portfolio_growth <- gun_co_returns %>% tq_portfolio(assets_col = symbol, returns_col = Ra, weights = gun_wts, col_rename = "investment.growth", wealth.index=TRUE)
+gun_co_portfolio_growth$investment.growth <- gun_co_portfolio_growth$investment.growth-1
+head(gun_co_portfolio_growth)
+```
+
+#### Portfolio's compounded return plot  
+
+Plot showing cumulative portfolio return and mass shooitng events on function of time  
+
+```{r}
+gun_portfolio_cum_return <- ggplot(data = gun_co_portfolio_growth, aes(x=date, y=investment.growth))
+gun_portfolio_cum_return <- gun_portfolio_cum_return + geom_line(size=1, color=palette_light()[[1]])
+gun_portfolio_cum_return <- gun_portfolio_cum_return + geom_smooth(method = "loess")
+gun_portfolio_cum_return <- gun_portfolio_cum_return + theme(legend.position = "none")
+
+## Vertical lines to show mass shootings
+gun_portfolio_cum_return <- gun_portfolio_cum_return + geom_vline(data=us_mass03, aes(xintercept=date), linetype=3)
+
+gun_portfolio_cum_return <- gun_portfolio_cum_return + labs(title = "Compounded Return of US Gun Manufacture Portfolio", 
+                                                            subtitle = "Mass Shootings with seven or more total victims", 
+                                                            caption = "Source: Yahoo finance and Kaggle's Mass Shooting in United States (2018-2022)")
+gun_portfolio_cum_return <- gun_portfolio_cum_return + ylab("Ra") 
+gun_portfolio_cum_return <- gun_portfolio_cum_return + scale_x_date(date_breaks = "2 years", date_labels = "%Y")
+
+gun_portfolio_cum_return
+
+ggsave("89plot14B.png")
+
+```
+
+#### Join portfolio dataframe with mass shooting dataframe  
+
+Merging mass shooting data set and portfolio data set.  Those observations where 20 day moving average is NA were eliminated.  An indicator (dummy) variable for shooting was created  
+
+```{r}
+
+
+temp_mass_dates <- us_mass02 %>% filter(total_victims >= 7) %>% select("date", "fatalities", "injured", "total_victims")
+merged_df <- merge(gun_co_portfolio_returns, temp_mass_dates, by.x = "date", by.y = "date", all.x = TRUE)
+merged_df <- merged_df %>%  replace_na(list(fatalities=0, injured=0, total_victims=0)) %>%
+                        mutate(shooting = ifelse(total_victims>0,1,0))
+merged_df2 <- merged_df %>% drop_na(Mom_20day) #%>% drop_na(Ra_10day)
+tail(merged_df2, 10)
+```
+
+#### correlation plot    
+
+A correlation plot was set up in order to determine multicollinearity among variables  
+
+```{r}
+corrplot::corrplot(cor(merged_df2[,-1]),  method="number",  number.cex = 0.7) #addCoef.col=1,
+
+ggsave("89plot15B.png")
+```
+
+#### Splitting data set in trainig and test set  
+
+The data set was split into train and test.  Until December 31, 2019 was used as a training, after that was used for testing  
+
+```{r}
+merged_df_train <- merged_df2 %>% filter(date<="2019-12-31")
+
+merged_df_test <- merged_df2 %>% filter(date > "2019-12-31")
+tail(merged_df_test, 10)
+
+```
+
+
+
+
+
+
+
+
+#### Linear regressions  
+
+The following lines are the series of models built for this analysis.   Transformations were implemented as well  
+
+
+
+##### SMA Short Model A  
+
+```{r}
+sma1A <- lm(data = merged_df_train, formula = SMA.2day ~ fatalities + injured)
+summary(sma1A)
+
+plot(sma1A)
+
+```
+
+
+
+##### Model B  
+
+```{r}
+sma1B <- lm(data = merged_df_train, formula = SMA.2day ~ total_victims)
+summary(sma1B)
+
+plot(sma1B)
+
+```
+
+##### SMA long vs tatalities + injured  
+
+```{r}
+sma2A <- lm(data = merged_df_train, formula = SMA.15day ~ fatalities + injured)
+summary(sma2A)
+par(mfrow=c(1,2))
+plot(sma2A)
+require(ggiraph)
+require(ggiraphExtra)
+require(plyr)
+#install.packages("devtools")
+#devtools::install_github("cardiomoon/ggiraphExtra")
+#install.packages("predict3d")
+ggPredict(sma2A,se=TRUE,interactive=TRUE)
+
+```
+
+##### SMA long vs total victims  
+
+```{r}
+sma2B <- lm(data = merged_df_train, formula = SMA.15day ~ total_victims)
+summary(sma2B)
+
+plot(sma2B)
+
+```
+
+
+
+
+##### Draw Down 2 day  
+
+```{r}
+DD1 <- lm(data = merged_df_train, formula = gunDD_2day ~ total_victims)
+summary(DD1)
+
+```
+
+##### Draw Down 3 day  
+
+```{r}
+DD2 <- lm(data = merged_df_train, formula = gunDD_3day ~ total_victims)
+summary(DD2)
+
+```
+
+##### Draw Down 5 day  
+
+```{r}
+DD3 <- lm(data = merged_df_train, formula = gunDD_5day ~ total_victims)
+summary(DD3)
+
+```
+
+##### Draw Down 10 day  
+
+```{r}
+DD4 <- lm(data = merged_df_train, formula = gunDD_10day ~ total_victims)
+summary(DD4)
+
+```
+
+##### Draw Down 15 day  
+
+```{r}
+DD5 <- lm(data = merged_df_train, formula = gunDD_15day ~ total_victims)
+summary(DD5)
+
+```
+
+##### Draw Down 20 day  
+
+```{r}
+DD6 <- lm(data = merged_df_train, formula = gunDD_20day ~ total_victims)
+summary(DD6)
+
+```
+
+##### Momentum 2 day  
+
+```{r}
+mom1 <- lm(data = merged_df_train, formula = Mom_2day ~ total_victims)
+summary(mom1)
+
+```
+
+##### Momentum 3 day  
+
+```{r}
+mom2 <- lm(data = merged_df_train, formula = Mom_3day ~ total_victims)
+summary(mom2)
+
+```
+
+##### Momentum 5 day vs fatalities + injured   
+
+```{r}
+mom3A <- lm(data = merged_df_train, formula = Mom_5day ~ fatalities + injured)
+summary(mom3A)
+
+plot(mom3A)
+```
+
+##### Momentum 5 day vs total victims  
+
+```{r}
+mom3B <- lm(data = merged_df_train, formula = Mom_5day ~ total_victims)
+summary(mom3B)
+par(mfrow=c(2,2))
+plot(mom3B)
+ggPredict(mom3B,se=TRUE,interactive=TRUE)
+```
+
+##### Momentum 10 day  
+
+```{r}
+mom4 <- lm(data = merged_df_train, formula = Mom_10day ~ total_victims)
+summary(mom4)
+
+```
+
+##### Momentum 15 day  
+
+```{r}
+mom5 <- lm(data = merged_df_train, formula = Mom_15day ~ total_victims )
+summary(mom5)
+
+```
+
+##### Momentum 20 day vs Fatalities + Injured  linear - linear   
+
+```{r}
+
+mom6A1 <- lm(data = merged_df_train, formula = Mom_20day ~ fatalities + injured)
+summary(mom6A1)
+
+plot(mom6A1)
+
+```
+
+##### Momentum 20 day vs Total Victims  linear - linear   
+
+```{r}
+
+mom6A2 <- lm(data = merged_df_train, formula = Mom_20day ~ total_victims)
+summary(mom6A2)
+
+plot(mom6A2)
+
+```
+
+##### Momentum 20 day linear - log  
+
+```{r}
+
+mom6B <- lm(data = merged_df_train, formula = Mom_20day ~ log(total_victims+1))
+summary(mom6B)
+
+```
+
+##### Momentum 20 day log - linear  
+
+```{r}
+c <- abs(min(merged_df_train$Mom_20day))
+c
+
+merged_df_train$log_mom_20day_c <- log(merged_df_train$Mom_20day+c+1)
+
+mom6C <- lm(data = merged_df_train, formula = log_mom_20day_c ~ total_victims)
+summary(mom6C)
+par(mfrow=c(1,2))
+plot(mom6C)
+ggPredict(mom6C, se=TRUE,interactive=TRUE)
+
+```
+
+##### Momentum 20 day log - log  
+
+```{r}
+c <- abs(min(merged_df_train$Mom_20day))
+c
+
+
+mom6D <- lm(data = merged_df_train, formula = log(Mom_20day+c+1) ~ log(total_victims+1))
+summary(mom6D)
+
+```
+
+#### Prediction - SMA2A  
+
+```{r}
+library(forecast)
+predict_01 <- predict(sma2A, newdata = merged_df_test)
+head(predict_01,10)
+
+accuracy_01 <- accuracy(predict_01, merged_df_test$SMA.15day)
+accuracy_01
+
+```
+
+
+#### Prediction - mom3B  
+
+```{r}
+predict_02 <- predict(mom3B, newdata = merged_df_test)
+head(predict_02,10)
+
+accuracy_02 <- accuracy(predict_02, merged_df_test$Mom_5day)
+accuracy_02
+
+```
+
+
+
+### The nest two plots were generated so we can confirm that our code was corrected  
+
+### Calculating compound return of gun portfolio  
+
+```{r}
+gun_co_portfolio_returns1 <- gun_co_portfolio_returns
+gun_co_portfolio_returns1 <- xts(gun_co_portfolio_returns1[,-1], order.by = gun_co_portfolio_returns$date,)
+#head(gun_co_portfolio_returns1)
+
+gun_comp_return <- Return.cumulative(gun_co_portfolio_returns1$Ra, geometric = TRUE)
+gun_comp_return
+chart.CumReturns(gun_co_portfolio_returns1$Ra, wealth.index = FALSE, geometric = TRUE)
+
+```
+
+### Estimating gun Portfolio Drawdown  
+
+```{r}
+library(data.table)
+gun_DD_plot <- chart.Drawdown(gun_co_portfolio_returns1$Ra)
+gun_DD_plot
+
+gun_DDtable <- table.Drawdowns(gun_co_portfolio_returns1$Ra, top = 7, digits = 4)
+gun_DDtable
+
+```
+
+
+
+
+
+
+
+
+
+

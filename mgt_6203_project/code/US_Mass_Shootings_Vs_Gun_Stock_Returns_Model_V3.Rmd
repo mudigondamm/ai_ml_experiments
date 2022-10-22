@@ -1,0 +1,163 @@
+---
+title: "Team-89 Group Project Modeling V3"
+author: "Madhu Mudigonda"
+date: '2022-06-25'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Initialize the required libraries
+
+```{r echo=FALSE}
+library('TTR')
+library('quantmod')
+
+library(ggplot2); library(readr); library(dplyr); library(tidyverse);
+library(gridExtra);library("ggExtra"); library(knitr);
+library(caret); library(gridExtra); library(lubridate); library(stringr);
+library(PerformanceAnalytics); library(xts); library(tidyquant); library(tidyverse);library(corrplot)
+```
+## Load gun company stock data
+```{r Load Gun co company stock data, include=TRUE}
+
+date_str <- "2009-10-01"
+stocks <- c("rgr", "swbi", "oln", "npk", "bgfv", "axon" )
+
+gun_co_stocks <- stocks %>% tq_get(get="stock.prices", from=date_str, to=Sys.Date())
+head(gun_co_stocks)
+
+
+
+```
+
+
+
+## Get stock daily ajusted returns
+```{r Compute adjusted daily returns, include=TRUE}
+gun_co_returns <- gun_co_stocks %>% group_by(symbol) %>% tq_transmute(select = adjusted, 
+                                                                      mutate_fun = periodReturn, 
+                                                                      period="daily", 
+                                                                      col_rename = "adjusted_returns")
+head(gun_co_returns)
+
+```
+
+
+## Create a portfolio of gun manufactures with market weighted index weights. Market caps as of 06/25/2022
+
+```{r data scaling, portfolio weights, include=TRUE}
+
+rgr_mrkt_cap  <- 1165000000  
+swbi_mrkt_cap <- 748193000  
+Olin_mrkt_cap <- 7085000000 
+npk_mrkt_cap  <- 462936000
+bgfv_mrkt_cap <- 268815000
+axon_mrkt_cap <- 6828000000
+
+total <- rgr_mrkt_cap + swbi_mrkt_cap + Olin_mrkt_cap + npk_mrkt_cap + bgfv_mrkt_cap + axon_mrkt_cap
+
+gun_wts <- c(rgr_mrkt_cap/total, swbi_mrkt_cap/total, Olin_mrkt_cap/total,
+             npk_mrkt_cap/total, bgfv_mrkt_cap/total, axon_mrkt_cap/total)
+gun_co_portfolio_returns <- gun_co_returns %>% 
+                                tq_portfolio(assets_col = symbol, 
+                                             returns_col = adjusted_returns, 
+                                             weights = gun_wts, 
+                                             col_rename = "adjusted_returns")
+
+gun_co_portfolio_returns <- gun_co_portfolio_returns %>% mutate(gunDD = Drawdowns(adjusted_returns))
+
+head(gun_co_portfolio_returns, 10)
+```
+
+## Compute short term and long term Simple moving average 
+
+```{r Create SMA factors, include=TRUE}
+gun_co_portfolio_returns <- gun_co_portfolio_returns %>%
+  # Calculate 50-day simple moving average
+                           tq_mutate(select = adjusted_returns, mutate_fun = SMA, n = 2) %>%
+                           # Rename 50-day SMA to SMA.short
+                           rename(SMA.short = SMA) %>%
+                           tq_mutate(select = adjusted_returns, mutate_fun = SMA, n = 3) %>%
+                           rename(SMA.long = SMA)
+                                    
+gun_co_portfolio_returns <- gun_co_portfolio_returns %>% filter(date>="2010-01-01")
+
+                                     
+head(gun_co_portfolio_returns, 10)
+```
+
+
+
+## Mass shootings data, Filter mass shootings that happened after 2010-01-01 and fatalities>=5, then Obtain mass shooting date vector, shift the weekend dates to following week dates
+```{r Load US mass shootings data and clean data, include=TRUE}
+us_mass <- read.csv("US_Mass_Shootings_May_24_2022.csv")
+
+#Select those variables that are needed for our analysis
+us_mass02 <- us_mass %>% select(location, date, fatalities, injured, total_victims)
+
+# change date format to standardize dates
+us_mass02 <- us_mass02 %>% mutate(date = mdy(date)) %>%
+                mutate(year = year(date)) %>%
+                mutate(state = ifelse(location=="Washington, D.C.", "Washington, D.C.",str_extract(location,
+                                                "[\\s]*[A-Z][a-z]+[\\s]*[[A-Z][a-z]+]*$"))) %>%
+                mutate(fatalities = as.integer(fatalities)) %>%
+                mutate(injured = as.integer(injured)) %>%
+                mutate(total_victims = as.integer(total_victims)) %>%
+                select(location, state, date, year, fatalities, injured, total_victims)
+
+us_mass03 <- us_mass02 %>% filter(date>="2010-01-01" & fatalities>=5)
+
+us_mass03$orig_date = us_mass03$date
+us_mass03 %>%
+     mutate(new_date = case_when(weekdays(date) == "Saturday" ~ (date + 2), 
+                                 weekdays(date) == "Sunday" ~ (date + 1), 
+                                 TRUE ~ date)) %>%
+     select(-date)
+
+head(us_mass02, 10)
+
+```
+
+
+## Merge Gun Portfolio returns vs US mass shootings data and correlation plots:
+
+```{r merge gun co stock data with US mass shooting data, include=TRUE}
+
+us_mass03$event_date <- us_mass03[,8]
+
+gun_co_portfolio_returns$return_date <- gun_co_portfolio_returns$date
+
+merged_df <- merge(x=gun_co_portfolio_returns, y=us_mass03, by.x="date", by.y="event_date",  all.x = TRUE)
+
+
+merged_df$featured <- ifelse(!is.na(merged_df$total_victims), 1, 0)
+
+# fill nas where there are no events with 0
+merged_df$total_victims <- ifelse(is.na(merged_df$total_victims), 0, merged_df$total_victims)
+merged_df$fatalities <- ifelse(is.na(merged_df$fatalities), 0, merged_df$fatalities)
+merged_df$injured <- ifelse(is.na(merged_df$injured), 0, merged_df$injured)
+
+merged_df_select_columns <- merged_df[, c("adjusted_returns", "SMA.short", "SMA.long", 
+                                          "fatalities", "injured", "total_victims", "featured" )]
+
+corrplot(cor(merged_df_select_columns))
+
+cor_data = cor(merged_df_select_columns)
+
+cor_data
+
+```
+
+## Create model:
+
+```{r create model, include=TRUE}
+
+linear_model <- lm(SMA.short ~ injured + fatalities + total_victims, data=merged_df)
+summary(linear_model)
+
+```
